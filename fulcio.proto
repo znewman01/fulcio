@@ -137,7 +137,8 @@ message CertificateChain {
 
 enum PublicKeyAlgorithm {
     PUBLIC_KEY_ALGORITHM_UNSPECIFIED = 0;
-    RSA_PSS                          = 1;
-    ECDSA                            = 2;
-    ED25519                          = 3;
+    X509_RSA_PSS                     = 1;
+    X509_ECDSA                       = 2;
+    X509_ED25519                     = 3;
+    SSH_ED25519                      = 4;
 }
