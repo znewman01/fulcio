@@ -16,7 +16,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -46,6 +48,7 @@ import (
 	"github.com/sigstore/fulcio/pkg/config"
 	"github.com/sigstore/fulcio/pkg/generated/protobuf"
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
+	"golang.org/x/crypto/ssh"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
@@ -242,7 +245,7 @@ func TestAPIWithEmail(t *testing.T) {
 
 		client := protobuf.NewCAClient(conn)
 
-		pubBytes, proof := generateKeyAndProof(c.Subject, t)
+		pubBytes, proof := generateKeyBytesAndProof(c.Subject, t)
 
 		// Hit the API to have it sign our certificate.
 		resp, err := client.CreateSigningCertificate(ctx, &protobuf.CreateSigningCertificateRequest{
@@ -331,7 +334,7 @@ func TestAPIWithUriSubject(t *testing.T) {
 
 		client := protobuf.NewCAClient(conn)
 
-		pubBytes, proof := generateKeyAndProof(c.Subject, t)
+		pubBytes, proof := generateKeyBytesAndProof(c.Subject, t)
 
 		// Hit the API to have it sign our certificate.
 		resp, err := client.CreateSigningCertificate(ctx, &protobuf.CreateSigningCertificateRequest{
@@ -421,7 +424,7 @@ func TestAPIWithKubernetes(t *testing.T) {
 
 	client := protobuf.NewCAClient(conn)
 
-	pubBytes, proof := generateKeyAndProof(k8sSubject, t)
+	pubBytes, proof := generateKeyBytesAndProof(k8sSubject, t)
 
 	// Hit the API to have it sign our certificate.
 	resp, err := client.CreateSigningCertificate(ctx, &protobuf.CreateSigningCertificateRequest{
@@ -514,7 +517,7 @@ func TestAPIWithGitHub(t *testing.T) {
 
 	client := protobuf.NewCAClient(conn)
 
-	pubBytes, proof := generateKeyAndProof(gitSubject, t)
+	pubBytes, proof := generateKeyBytesAndProof(gitSubject, t)
 
 	// Hit the API to have it sign our certificate.
 	resp, err := client.CreateSigningCertificate(ctx, &protobuf.CreateSigningCertificateRequest{
@@ -580,6 +583,136 @@ func TestAPIWithGitHub(t *testing.T) {
 	}
 	if string(refExt.Value) != claims.Ref {
 		t.Fatalf("unexpected ref, expected %s, got %s", claims.Ref, string(refExt.Value))
+	}
+}
+
+// Tests API for TODO
+func TestAPIWithSSH(t *testing.T) {
+	emailSigner, emailIssuer := newOIDCIssuer(t)
+	usernameSigner, usernameIssuer := newOIDCIssuer(t)
+
+	issuerDomain, err := url.Parse(usernameIssuer)
+	if err != nil {
+		t.Fatal("issuer URL could not be parsed", err)
+	}
+
+	// Create a FulcioConfig that supports these issuers.
+	cfg, err := config.Read([]byte(fmt.Sprintf(`{
+		"OIDCIssuers": {
+			%q: {
+				"IssuerURL": %q,
+				"ClientID": "sigstore",
+				"Type": "email"
+			},
+			%q: {
+				"IssuerURL": %q,
+				"ClientID": "sigstore",
+				"SubjectDomain": %q,
+				"Type": "username"
+			}
+		}
+	}`, emailIssuer, emailIssuer, usernameIssuer, usernameIssuer, issuerDomain.Hostname())))
+	if err != nil {
+		t.Fatalf("config.Read() = %v", err)
+	}
+
+	emailSubject := "foo@example.com"
+	usernameSubject := "foo"
+	expectedUsernamedSubject := fmt.Sprintf("%s@%s", usernameSubject, issuerDomain.Hostname())
+
+	tests := []oidcTestContainer{
+		{
+			Signer: emailSigner, Issuer: emailIssuer, Subject: emailSubject, ExpectedSubject: emailSubject,
+		},
+		{
+			Signer: usernameSigner, Issuer: usernameIssuer, Subject: usernameSubject, ExpectedSubject: expectedUsernamedSubject,
+		},
+	}
+	for _, c := range tests {
+		// Create an OIDC token using this issuer's signer.
+		tok, err := jwt.Signed(c.Signer).Claims(jwt.Claims{
+			Issuer:   c.Issuer,
+			IssuedAt: jwt.NewNumericDate(time.Now()),
+			Expiry:   jwt.NewNumericDate(time.Now().Add(30 * time.Minute)),
+			Subject:  c.Subject,
+			Audience: jwt.Audience{"sigstore"},
+		}).Claims(customClaims{Email: c.Subject, EmailVerified: true}).CompactSerialize()
+		if err != nil {
+			t.Fatalf("CompactSerialize() = %v", err)
+		}
+
+		ctClient, eca := createCA(cfg, t)
+		ctx := context.Background()
+		server, conn := setupGRPCForTest(ctx, t, cfg, ctClient, eca)
+		defer func() {
+			server.Stop()
+			conn.Close()
+		}()
+
+		client := protobuf.NewCAClient(conn)
+
+		pubKey, proof := generateKeyAndProof(c.Subject, t)
+		pubSSHKey, err := ssh.NewPublicKey(pubKey)
+		if err != nil {
+			t.Fatalf("NewPublicKey() = %v", err)
+		}
+
+		// Hit the API to have it sign our certificate.
+		resp, err := client.CreateSigningCertificate(ctx, &protobuf.CreateSigningCertificateRequest{
+			Credentials: &protobuf.Credentials{
+				Credentials: &protobuf.Credentials_OidcIdentityToken{
+					OidcIdentityToken: tok,
+				},
+			},
+			PublicKey: &protobuf.PublicKey{
+				Content:   string(ssh.MarshalAuthorizedKey(pubSSHKey)),
+				Algorithm: protobuf.PublicKeyAlgorithm_SSH_ED25519,
+			},
+			ProofOfPossession: proof,
+		})
+		if err != nil {
+			t.Fatalf("SigningCert() = %v", err)
+		}
+
+		if resp.GetSignedCertificateEmbeddedSct() != nil || resp.GetSignedCertificateDetachedSct() == nil {
+			t.Fatal("SSH certs should have detached SCT.")
+		}
+		chain := resp.GetSignedCertificateDetachedSct().Chain
+		if len(chain.Certificates) != 2 {
+			t.Fatalf("Should have 2 certs: leaf and CA")
+		}
+		leafCertBytes := chain.Certificates[0]
+		leafCertKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(leafCertBytes))
+		if err != nil {
+			t.Fatalf("ParseAuthorizedKey() = %v", err)
+		}
+		leafCert := leafCertKey.(*ssh.Certificate)
+		caCertBytes := chain.Certificates[1]
+		caCertKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(caCertBytes))
+		if err != nil {
+			t.Fatalf("ParseAuthorizedKey() = %v", err)
+		}
+		caCert := caCertKey.(*ssh.Certificate)
+
+		actual := ssh.MarshalAuthorizedKey(leafCert.Key)
+		expected := ssh.MarshalAuthorizedKey(pubSSHKey)
+		if !bytes.Equal(actual, expected) {
+			t.Fatalf("key in cert does not match requested key: %v != %v", string(actual), string(expected))
+		}
+		actual = leafCert.SignatureKey.Marshal()
+		expected = caCert.Key.Marshal()
+		if !bytes.Equal(actual, expected) {
+			t.Fatalf("signature key in cert does not match CA key: %v != %v", string(actual), string(expected))
+		}
+
+		cc := ssh.CertChecker{
+			IsUserAuthority: func(_ ssh.PublicKey) bool { return true },
+		}
+		if err = cc.CheckCert(leafCert.ValidPrincipals[0], caCert); err != nil {
+			t.Fatalf("CheckCert() = %v", err)
+		}
+
+		// TODO: additional checks: serial number, validity, certtype, keyid
 	}
 }
 
@@ -747,19 +880,26 @@ func createCA(cfg *config.FulcioConfig, t *testing.T) (*ctclient.LogClient, *eph
 
 // generateKeyAndProof creates a public key to be certified and creates a
 // signature for the OIDC token subject
-func generateKeyAndProof(subject string, t *testing.T) (string, []byte) {
+func generateKeyAndProof(subject string, t *testing.T) (crypto.PublicKey, []byte) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey() = %v", err)
-	}
-	pubBytes, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
-	if err != nil {
-		t.Fatalf("x509.MarshalPKIXPublicKey() = %v", err)
 	}
 	hash := sha256.Sum256([]byte(subject))
 	proof, err := ecdsa.SignASN1(rand.Reader, priv, hash[:])
 	if err != nil {
 		t.Fatalf("SignASN1() = %v", err)
+	}
+	return &priv.PublicKey, proof
+}
+
+// generateKeyBytesAndProof creates a public key to be certified and creates a
+// signature for the OIDC token subject
+func generateKeyBytesAndProof(subject string, t *testing.T) (string, []byte) {
+	pubKey, proof := generateKeyAndProof(subject, t)
+	pubBytes, err := x509.MarshalPKIXPublicKey(pubKey)
+	if err != nil {
+		t.Fatalf("x509.MarshalPKIXPublicKey() = %v", err)
 	}
 	return string(cryptoutils.PEMEncode(cryptoutils.CertificatePEMType, pubBytes)), proof
 }

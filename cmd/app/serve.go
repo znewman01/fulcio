@@ -35,6 +35,7 @@ import (
 	"github.com/sigstore/fulcio/pkg/ca/fileca"
 	googlecav1 "github.com/sigstore/fulcio/pkg/ca/googleca/v1"
 	"github.com/sigstore/fulcio/pkg/ca/kmsca"
+	"github.com/sigstore/fulcio/pkg/ca/sshca"
 	"github.com/sigstore/fulcio/pkg/ca/x509ca"
 	"github.com/sigstore/fulcio/pkg/config"
 	"github.com/sigstore/fulcio/pkg/log"
@@ -68,6 +69,8 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().String("fileca-cert", "", "Path to CA certificate")
 	cmd.Flags().String("fileca-key", "", "Path to CA encrypted private key")
 	cmd.Flags().String("fileca-key-passwd", "", "Password to decrypt CA private key")
+	cmd.Flags().String("sshca-cert", "", "Path to CA certificate")
+	cmd.Flags().String("sshca-key", "", "Path to CA encrypted private key")
 	cmd.Flags().Bool("fileca-watch", true, "Watch filesystem for updates")
 	cmd.Flags().String("kms-resource", "", "KMS key resource path. Must be prefixed with awskms://, azurekms://, gcpkms://, or hashivault://")
 	cmd.Flags().String("kms-cert-chain-path", "", "Path to PEM-encoded CA certificate chain for KMS-backed CA")
@@ -219,7 +222,12 @@ func runServeCmd(cmd *cobra.Command, args []string) {
 
 	reg := prometheus.NewRegistry()
 
-	grpcServer, err := createGRPCServer(cfg, ctClient, baseca)
+	sshCA, err := sshca.NewSSHCA(viper.GetString("sshca-key"), viper.GetString("sshca-cert"))
+	if err != nil {
+		log.Logger.Fatal(err)
+	}
+
+	grpcServer, err := createGRPCServer(cfg, ctClient, baseca, sshCA)
 	if err != nil {
 		log.Logger.Fatal(err)
 	}

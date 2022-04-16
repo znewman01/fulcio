@@ -62,7 +62,7 @@ func passFulcioConfigThruContext(cfg *config.FulcioConfig) grpc.UnaryServerInter
 	}
 }
 
-func createGRPCServer(cfg *config.FulcioConfig, ctClient *ctclient.LogClient, baseca ca.CertificateAuthority) (*grpcServer, error) {
+func createGRPCServer(cfg *config.FulcioConfig, ctClient *ctclient.LogClient, baseca ca.CertificateAuthority, sshca ca.CertificateAuthority) (*grpcServer, error) {
 	logger, opts := log.SetupGRPCLogging()
 
 	myServer := grpc.NewServer(grpc.UnaryInterceptor(
