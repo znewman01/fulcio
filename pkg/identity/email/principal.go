@@ -17,6 +17,7 @@ package email
 import (
 	"context"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/sigstore/fulcio/pkg/config"
 	"github.com/sigstore/fulcio/pkg/identity"
 	"github.com/sigstore/fulcio/pkg/oauthflow"
+	"github.com/sigstore/fulcio/pkg/pedersen"
 )
 
 type principal struct {
@@ -67,7 +69,10 @@ func (p principal) Name(_ context.Context) string {
 }
 
 func (p principal) Embed(_ context.Context, cert *x509.Certificate) error {
-	cert.EmailAddresses = []string{p.address}
+	params := pedersen.GetInsecureParameters()
+	comm, _ := params.Commit([]byte(p.address))
+	email := fmt.Sprintf("%s@pedersen.commitment", hex.EncodeToString(comm.Bytes()))
+	cert.EmailAddresses = []string{email}
 
 	var err error
 	cert.ExtraExtensions, err = certificate.Extensions{
