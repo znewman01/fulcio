@@ -34,5 +34,5 @@ func (e *emailIssuer) Authenticate(ctx context.Context, token string) (identity.
 	if err != nil {
 		return nil, err
 	}
-	return PrincipalFromIDToken(ctx, idtoken)
+	return PrincipalFromIDToken(ctx, idtoken, token)
 }
