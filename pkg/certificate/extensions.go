@@ -52,6 +52,10 @@ var (
 	OIDBuildConfigDigest               = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 19}
 	OIDBuildTrigger                    = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 20}
 	OIDRunInvocationURI                = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 21}
+
+	// Experimental
+	OIDJWTNoSig = asn1.ObjectIdentifier{1, 3, 9901}
+	OIDGQProof  = asn1.ObjectIdentifier{1, 3, 9902}
 )
 
 // Extensions contains all custom x509 extensions defined by Fulcio
@@ -128,6 +132,9 @@ type Extensions struct {
 
 	// Run Invocation URL to uniquely identify the build execution.
 	RunInvocationURI string // 1.3.6.1.4.1.57264.1.21
+
+	JWTNoSig string // 1.3.9901
+	GQProof  string // 1.3.9902
 }
 
 func (e Extensions) Render() ([]pkix.Extension, error) {
@@ -317,6 +324,26 @@ func (e Extensions) Render() ([]pkix.Extension, error) {
 		}
 		exts = append(exts, pkix.Extension{
 			Id:    OIDRunInvocationURI,
+			Value: val,
+		})
+	}
+	if e.JWTNoSig != "" {
+		val, err := asn1.MarshalWithParams(e.JWTNoSig, "utf8")
+		if err != nil {
+			return nil, err
+		}
+		exts = append(exts, pkix.Extension{
+			Id:    OIDJWTNoSig,
+			Value: val,
+		})
+	}
+	if e.GQProof != "" {
+		val, err := asn1.MarshalWithParams(e.GQProof, "utf8")
+		if err != nil {
+			return nil, err
+		}
+		exts = append(exts, pkix.Extension{
+			Id:    OIDGQProof,
 			Value: val,
 		})
 	}
